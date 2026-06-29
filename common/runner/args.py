@@ -120,6 +120,10 @@ def parse_common_args(
         help="Show detailed per-frame/image [INFO] logs (default: quiet)",
     )
 
+# Add our custom FPS control argument
+    parser.add_argument("--fps", type=float, default=0.0,
+                        help="Target playback frames per second (e.g., 30.0. 0 means unlimited)")
+
     # ---- Optional: output path (SR / depth / denoising) ----
     if include_output:
         parser.add_argument(

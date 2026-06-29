@@ -106,6 +106,7 @@ class AsyncRunner:
         self._input_path = ""      # For verify dump
         self._verify_dumped = False  # Only dump once per run
         self._verbose = False
+        self._target_fps = 0.0
 
         # SR tiled fallback (ESPCN etc.)
         self._sr_cache: Optional[dict] = None
@@ -174,6 +175,7 @@ class AsyncRunner:
         self._save_dir = getattr(args, "save_dir", None)
         self._dump_tensors = getattr(args, "dump_tensors", False)
         self._loop = _parse_loop_value(args)
+        self._target_fps = getattr(args, "fps", 0.0)
 
         logger.info("\nStarting inference...")
         self._dispatch_input(args)
@@ -544,12 +546,17 @@ class AsyncRunner:
     # Display loop (main thread)
     # ------------------------------------------------------------------
 
-    def _run_display_loop(self, queues: dict, display: bool) -> None:
+    def _run_display_loop(self, queues: dict, display: bool, target_fps: float = 0.0) -> None:
         """Run on main thread. Consumes display_queue."""
         display_q = queues["display_queue"]
         has_gui = _has_display()
         is_image = getattr(self, "_is_image_input", False)
+
+        # Calculate the ideal delay per frame in seconds
+        frame_delay = 1.0 / target_fps if target_fps > 0 else 0.0
+
         while not self._stop_event.is_set():
+            cycle_start = time.perf_counter()
             item = display_q.get(timeout=0.5)
             if item is _SENTINEL:
                 break
@@ -571,7 +578,15 @@ class AsyncRunner:
             with self._metrics_lock:
                 self._metrics["sum_display"] += time.perf_counter() - t_d0
                 self._metrics["display_completed"] += 1
-            
+
+            # --- Target FPS Throttling Logic ---
+            # Calculate how long it took to process and display the current frame
+            cycle_elapsed = time.perf_counter() - cycle_start
+            sleep_time = frame_delay - cycle_elapsed
+
+            # If the processing is faster than the target FPS, sleep for the remaining time
+            if sleep_time > 0 and not is_image:
+                time.sleep(sleep_time)
 
     # ------------------------------------------------------------------
     # Postprocess / Visualize helpers
@@ -1017,7 +1032,7 @@ class AsyncRunner:
 
         try:
             if display:
-                self._run_display_loop(queues, display)
+                self._run_display_loop(queues, display, target_fps=self._target_fps)
                 # Image mode: keep window open until user closes it.
                 # Only in a real GUI environment (headless: skip).
                 if not is_video and _has_display():
