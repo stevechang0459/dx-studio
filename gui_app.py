@@ -5,6 +5,7 @@ import sys
 import os
 import cv2
 import time
+from datetime import datetime
 import queue
 import traceback
 import importlib.util
@@ -61,6 +62,8 @@ class InferenceThread(QThread):
 
         # Force logging module to output INFO logs to stdout instead of stderr
         # This prevents normal progress logs from being painted red as errors.
+        # logging.basicConfig(stream=sys.stdout, level=logging.INFO, format='%(message)s', force=True)
+        # %(levelname)s:%(name)s:%(message)s
         logging.basicConfig(stream=sys.stdout, level=logging.INFO, force=True)
 
         # 2. Mock sys.argv to simulate command line execution
@@ -155,10 +158,17 @@ class InferenceGUI(QWidget):
         # Flag to distinguish between natural finish and manual stop
         self._manual_stop = False
 
+        # Generate a timestamped log filename for this session
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_filename = f"dx_studio_{timestamp}.log"
+
         # Initialize thread-safe communication queues
         self.log_queue = queue.Queue()
         # Restrict frame buffer to 3 frames to prevent memory explosion
         self.frame_queue = queue.Queue(maxsize=3)
+
+        # Setup Regex for stripping ANSI codes before saving to file
+        self.ansi_escape = re.compile(r'\x1b\[([0-9;]*)m')
 
         # Start a QTimer to poll the queues at ~30Hz (33ms)
         self.poll_timer = QTimer(self)
@@ -349,7 +359,15 @@ class InferenceGUI(QWidget):
         filename, _ = QFileDialog.getOpenFileName(self, "Select Video File", "", "Video Files (*.mp4 *.avi *.mkv *.mov);;All Files (*)")
         self._update_combo_from_browse(self.video_input, filename)
 
-    # --- Execution Logic ---
+    def write_to_log_file(self, text):
+        """Strip ANSI colors and append perfectly clean text to dx_studio.log synchronously"""
+        clean_text = self.ansi_escape.sub('', text)
+        try:
+            with open(self.log_filename, "a", encoding="utf-8") as f:
+                f.write(clean_text)
+        except Exception:
+            pass
+
     def execute_command(self):
         self._manual_stop = False
 
@@ -374,7 +392,9 @@ class InferenceGUI(QWidget):
         # Automatically switch to the Display tab so the user sees the video
         self.tabs.setCurrentWidget(self.tab_display)
 
-        self.console_output.insertPlainText(f"[SYSTEM] Starting thread...\nArgs: {' '.join(cmd_args)}\n")
+        msg = f"[SYSTEM] Starting thread...\nArgs: {' '.join(cmd_args)}\n"
+        self.write_to_log_file(msg)
+        self.console_output.insertPlainText(msg)
         self.console_output.ensureCursorVisible()
 
         # Clear any residual data in the queues from previous runs
@@ -391,13 +411,15 @@ class InferenceGUI(QWidget):
     def stop_command(self):
         if self.inference_thread and self.inference_thread.isRunning():
             self._manual_stop = True
-            self.console_output.insertPlainText("[SYSTEM] Stopping process gracefully...\n")
+            msg = "[SYSTEM] Stopping process gracefully...\n"
+            self.write_to_log_file(msg)
+            self.console_output.insertPlainText(msg)
             self.console_output.ensureCursorVisible()
             self.inference_thread.stop()
 
     def insert_ansi_text(self, text, default_color):
-        ansi_regex = re.compile(r'\x1b\[([0-9;]*)m')
-        parts = ansi_regex.split(text)
+        """Translate ANSI control codes to native QTextEdit UI styling"""
+        parts = self.ansi_escape.split(text)
 
         for i, part in enumerate(parts):
             if i % 2 == 1:
@@ -446,7 +468,9 @@ class InferenceGUI(QWidget):
 
                     # --- Auto-Loop Logic ---
                     if self.auto_loop_checkbox.isChecked() and not self._manual_stop:
-                        self.console_output.insertPlainText("[SYSTEM] Auto-looping to next video...\n")
+                        msg = "[SYSTEM] Auto-looping to next video...\n"
+                        self.write_to_log_file(msg)
+                        self.console_output.insertPlainText(msg)
                         self.console_output.ensureCursorVisible()
 
                         # Increment the video combo box index, wrapping around
@@ -460,15 +484,19 @@ class InferenceGUI(QWidget):
                         # Normal finish or manually stopped
                         self.run_btn.setEnabled(True)
                         self.stop_btn.setEnabled(False)
-                        self.console_output.insertPlainText("[SYSTEM] Process finished.\n")
+                        msg = "[SYSTEM] Process finished.\n"
+                        self.write_to_log_file(msg)
+                        self.console_output.insertPlainText(msg)
                         self.console_output.ensureCursorVisible()
 
                 elif is_error:
+                    self.write_to_log_file(text)
                     self.insert_ansi_text(text, QColor("red"))
                     # Revert pen to default theme color
                     self.console_output.setTextColor(default_text_color)
                     self.console_output.ensureCursorVisible()
                 else:
+                    self.write_to_log_file(text)
                     self.insert_ansi_text(text, default_text_color)
                     self.console_output.ensureCursorVisible()
             except queue.Empty:
