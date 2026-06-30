@@ -11,6 +11,7 @@ import traceback
 import importlib.util
 import re
 import logging
+import gc
 import numpy as np
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QFormLayout, QLabel, QPushButton,
@@ -69,6 +70,18 @@ class InferenceThread(QThread):
         # 2. Mock sys.argv to simulate command line execution
         old_argv = sys.argv
         sys.argv = [self.script_path] + self.cmd_args
+
+        # ----- PATH AND CACHE MANAGEMENT ----
+        # Insert target script directory to sys.path so local imports work correctly
+        script_dir = os.path.dirname(os.path.abspath(self.script_path))
+        sys.path.insert(0, script_dir)
+
+        # Define common local module names that conflict across different models
+        conflict_modules = ["factory", "config"]
+        for mod in conflict_modules:
+            if mod in sys.modules:
+                del sys.modules[mod]
+        # ---------------------------------------
 
         # 3. Hijack (Monkey Patch) OpenCV functions
         old_imshow = cv2.imshow
@@ -129,6 +142,9 @@ class InferenceThread(QThread):
             self.log_queue.put((True, traceback.format_exc()))
         finally:
             # 5. Restore original system state
+            if sys.path and sys.path[0] == script_dir:
+                sys.path.pop(0)
+
             sys.stdout = old_stdout
             sys.stderr = old_stderr
             sys.argv = old_argv
@@ -139,6 +155,15 @@ class InferenceThread(QThread):
             if old_resizeWindow: cv2.resizeWindow = old_resizeWindow
             if old_destroyAllWindows: cv2.destroyAllWindows = old_destroyAllWindows
             if old_getWindowProperty: cv2.getWindowProperty = old_getWindowProperty
+
+            # === FIX FREEZE & COLLISION: FORCE GARBAGE COLLECTION ===
+            if "__main__" in sys.modules:
+                del sys.modules["__main__"]
+            # Purge the local modules again upon exit
+            for mod in conflict_modules:
+                if mod in sys.modules:
+                    del sys.modules[mod]
+            gc.collect()
 
             # Send a sentinel value to notify the GUI that the thread has finished
             self.log_queue.put((False, "___THREAD_FINISHED___"))
@@ -479,7 +504,8 @@ class InferenceGUI(QWidget):
                             next_idx = (current_idx + 1) % self.video_input.count()
                             self.video_input.setCurrentIndex(next_idx)
 
-                        self.execute_command()
+                        # FIX UI FREEZE: Use QTimer to yield back to event loop before starting new thread
+                        QTimer.singleShot(100, self.execute_command)
                     else:
                         # Normal finish or manually stopped
                         self.run_btn.setEnabled(True)
