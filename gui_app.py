@@ -8,6 +8,7 @@ import time
 import queue
 import traceback
 import importlib.util
+import re
 import logging
 import numpy as np
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
@@ -394,6 +395,33 @@ class InferenceGUI(QWidget):
             self.console_output.ensureCursorVisible()
             self.inference_thread.stop()
 
+    def insert_ansi_text(self, text, default_color):
+        ansi_regex = re.compile(r'\x1b\[([0-9;]*)m')
+        parts = ansi_regex.split(text)
+
+        for i, part in enumerate(parts):
+            if i % 2 == 1:
+                codes = part.split(';')
+                for code in codes:
+                    if code in ('0', ''):
+                        self.console_output.setTextColor(default_color)
+                        font = self.console_output.currentFont()
+                        font.setBold(False)
+                        self.console_output.setCurrentFont(font)
+                    elif code == '1':
+                        font = self.console_output.currentFont()
+                        font.setBold(True)
+                        self.console_output.setCurrentFont(font)
+                    elif code in ('31', '91'): self.console_output.setTextColor(QColor("#EF4444"))
+                    elif code in ('32', '92'): self.console_output.setTextColor(QColor("#10B981"))
+                    elif code in ('33', '93'): self.console_output.setTextColor(QColor("#F59E0B"))
+                    elif code in ('34', '94'): self.console_output.setTextColor(QColor("#3B82F6"))
+                    elif code in ('35', '95'): self.console_output.setTextColor(QColor("#8B5CF6"))
+                    elif code in ('36', '96'): self.console_output.setTextColor(QColor("#06B6D4"))
+            else:
+                if part:
+                    self.console_output.insertPlainText(part)
+
     def poll_queues(self):
         """Periodically checks the queues and safely updates the UI in the main thread."""
 
@@ -436,14 +464,12 @@ class InferenceGUI(QWidget):
                         self.console_output.ensureCursorVisible()
 
                 elif is_error:
-                    # Switch pen to red for error tracebacks
-                    self.console_output.setTextColor(QColor("red"))
-                    self.console_output.insertPlainText(text)
+                    self.insert_ansi_text(text, QColor("red"))
                     # Revert pen to default theme color
                     self.console_output.setTextColor(default_text_color)
                     self.console_output.ensureCursorVisible()
                 else:
-                    self.console_output.insertPlainText(text)
+                    self.insert_ansi_text(text, default_text_color)
                     self.console_output.ensureCursorVisible()
             except queue.Empty:
                 break

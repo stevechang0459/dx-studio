@@ -8,6 +8,18 @@ from dataclasses import dataclass, field
 import threading
 
 
+class Colors:
+    """ANSI escape codes for terminal color formatting."""
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+
 @dataclass
 class ProfilingMetrics:
     """
@@ -194,22 +206,22 @@ def print_performance_summary(metrics: ProfilingMetrics,
         model_name: Name of the model for display
         show_individual: Whether to show individual stage times
     """
-    print(f"\n{'='*60}")
+    print(f"\n{Colors.BLUE}{Colors.BOLD}{'='*60}")
     print(f" Performance Summary: {model_name}")
-    print(f"{'='*60}")
-    print(f"  Total Frames Processed: {metrics.get_frame_count()}")
-    print(f"  Average FPS: {metrics.get_fps():.2f}")
-    print(f"{'='*60}")
+    print(f"{'='*60}{Colors.RESET}")
+    print(f"  {Colors.GREEN}Total Frames Processed:{Colors.RESET} {Colors.YELLOW}{metrics.get_frame_count()}{Colors.RESET}")
+    print(f"  {Colors.GREEN}Average FPS:{Colors.RESET}            {Colors.CYAN}{metrics.get_fps():.2f}{Colors.RESET}")
+    print(f"{Colors.BLUE}{'='*60}{Colors.RESET}")
 
     if show_individual:
-        print("  Stage Breakdown:")
-        print(f"    Preprocessing:  {metrics.get_avg_preprocess_ms():>8.2f} ms")
-        print(f"    Inference:      {metrics.get_avg_inference_ms():>8.2f} ms")
-        print(f"    Postprocessing: {metrics.get_avg_postprocess_ms():>8.2f} ms")
-        print(f"{'='*60}")
+        print(f"  {Colors.BOLD}Stage Breakdown:{Colors.RESET}")
+        print(f"    {Colors.GREEN}Preprocessing:{Colors.RESET}  {Colors.YELLOW}{metrics.get_avg_preprocess_ms():>8.2f} ms{Colors.RESET}")
+        print(f"    {Colors.GREEN}Inference:{Colors.RESET}      {Colors.YELLOW}{metrics.get_avg_inference_ms():>8.2f} ms{Colors.RESET}")
+        print(f"    {Colors.GREEN}Postprocessing:{Colors.RESET} {Colors.YELLOW}{metrics.get_avg_postprocess_ms():>8.2f} ms{Colors.RESET}")
+        print(f"{Colors.BLUE}{'='*60}{Colors.RESET}")
 
-    print(f"  Average Total:    {metrics.get_avg_total_ms():>8.2f} ms/frame")
-    print(f"{'='*60}\n")
+    print(f"  {Colors.GREEN}Average Total:{Colors.RESET}    {Colors.YELLOW}{metrics.get_avg_total_ms():>8.2f} ms/frame{Colors.RESET}")
+    print(f"{Colors.BLUE}{Colors.BOLD}{'='*60}{Colors.RESET}\n")
 
 
 def print_async_performance_summary(metrics: AsyncProfilingMetrics,
@@ -221,20 +233,20 @@ def print_async_performance_summary(metrics: AsyncProfilingMetrics,
         metrics: AsyncProfilingMetrics object with collected data
         model_name: Name of the model for display
     """
-    print(f"\n{'='*60}")
+    print(f"\n{Colors.BLUE}{Colors.BOLD}{'='*60}")
     print(f" Async Performance Summary: {model_name}")
-    print(f"{'='*60}")
-    print(f"  Total Frames Processed: {metrics.get_frame_count()}")
-    print(f"  Throughput: {metrics.get_throughput():.2f} FPS")
-    print(f"{'='*60}")
-    print("  Stage Breakdown (avg):")
-    print(f"    Preprocessing:  {metrics.get_avg_preprocess_ms():>8.2f} ms")
-    print(f"    Inference:      {metrics.get_avg_inference_ms():>8.2f} ms")
-    print(f"    Postprocessing: {metrics.get_avg_postprocess_ms():>8.2f} ms")
-    print(f"{'='*60}")
-    print(f"  End-to-End Latency: {metrics.get_avg_end_to_end_ms():>8.2f} ms")
-    print(f"  Avg Queue Size:     {metrics.get_avg_queue_size():>8.1f}")
-    print(f"{'='*60}\n")
+    print(f"{'='*60}{Colors.RESET}")
+    print(f"  {Colors.GREEN}Total Frames Processed:{Colors.RESET} {Colors.YELLOW}{metrics.get_frame_count()}{Colors.RESET}")
+    print(f"  {Colors.GREEN}Throughput:{Colors.RESET}             {Colors.CYAN}{metrics.get_throughput():.2f} FPS{Colors.RESET}")
+    print(f"{Colors.BLUE}{'='*60}{Colors.RESET}")
+    print(f"  {Colors.BOLD}Stage Breakdown (avg):{Colors.RESET}")
+    print(f"    {Colors.GREEN}Preprocessing:{Colors.RESET}  {Colors.YELLOW}{metrics.get_avg_preprocess_ms():>8.2f} ms{Colors.RESET}")
+    print(f"    {Colors.GREEN}Inference:{Colors.RESET}      {Colors.YELLOW}{metrics.get_avg_inference_ms():>8.2f} ms{Colors.RESET}")
+    print(f"    {Colors.GREEN}Postprocessing:{Colors.RESET} {Colors.YELLOW}{metrics.get_avg_postprocess_ms():>8.2f} ms{Colors.RESET}")
+    print(f"{Colors.BLUE}{'='*60}{Colors.RESET}")
+    print(f"  {Colors.GREEN}End-to-End Latency:{Colors.RESET} {Colors.YELLOW}{metrics.get_avg_end_to_end_ms():>8.2f} ms{Colors.RESET}")
+    print(f"  {Colors.GREEN}Avg Queue Size:{Colors.RESET}     {Colors.YELLOW}{metrics.get_avg_queue_size():>8.1f}{Colors.RESET}")
+    print(f"{Colors.BLUE}{Colors.BOLD}{'='*60}{Colors.RESET}\n")
 
 
 def print_image_processing_summary(t_start, t0, t1, t2, t3, t4=None, t5=None):
@@ -257,13 +269,13 @@ def print_image_processing_summary(t_start, t0, t1, t2, t3, t4=None, t5=None):
 
     def _row(label, ms):
         fps = 1000.0 / ms if ms > 0 else 0.0
-        print(f" {label:<15} {ms:8.2f} ms     {fps:6.1f} FPS")
+        print(f" {Colors.GREEN}{label:<15}{Colors.RESET} {Colors.YELLOW}{ms:8.2f} ms{Colors.RESET}     {Colors.CYAN}{fps:6.1f} FPS{Colors.RESET}")
 
-    print("\n" + "=" * 50)
+    print(f"\n{Colors.BLUE}{Colors.BOLD}{'=' * 50}")
     print(f"{'PERFORMANCE SUMMARY':^50}")
-    print("=" * 50)
-    print(f" {'Pipeline Step':<15} {'Avg Latency':<15} {'Throughput':<15}")
-    print("-" * 50)
+    print(f"{'=' * 50}{Colors.RESET}")
+    print(f" {Colors.BLUE}{'Pipeline Step':<15} {'Avg Latency':<15} {'Throughput':<15}")
+    print(f"{'-' * 50}{Colors.RESET}")
     _row("Read", read_time)
     _row("Preprocess", preprocess_time)
     _row("Inference", inference_time)
@@ -280,19 +292,19 @@ def print_image_processing_summary(t_start, t0, t1, t2, t3, t4=None, t5=None):
         last_ts = t5
 
     total_time = (last_ts - t_start) * 1000.0
-    print("-" * 50)
-    print(f" {'Total Frames':<15} : {'1':>6}")
-    print(f" {'Total Time':<15} : {total_time / 1000.0:6.1f} s")
+    print(f"{Colors.BLUE}{'-' * 50}{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Total Frames':<15}{Colors.RESET} : {Colors.YELLOW}{'1':>6}{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Total Time':<15}{Colors.RESET} : {Colors.YELLOW}{total_time / 1000.0:6.1f} s{Colors.RESET}")
     overall_fps = 1000.0 / total_time if total_time > 0 else 0.0
-    print(f" {'Overall FPS':<15} : {overall_fps:6.1f} FPS")
-    print("=" * 50)
+    print(f" {Colors.GREEN}{'Overall FPS':<15}{Colors.RESET} : {Colors.CYAN}{overall_fps:6.1f} FPS{Colors.RESET}")
+    print(f"{Colors.BLUE}{'=' * 50}{Colors.RESET}")
 
 
 def _print_metric_line(label: str, total_sum: float, cnt: int) -> None:
     """Print a single metric line if sum > 0."""
     avg = total_sum / cnt * 1000.0
     fps = 1000.0 / avg if avg > 0 else 0.0
-    print(f" {label:<15} {avg:8.2f} ms     {fps:6.1f} FPS")
+    print(f" {Colors.GREEN}{label:<15}{Colors.RESET} {Colors.YELLOW}{avg:8.2f} ms{Colors.RESET}     {Colors.CYAN}{fps:6.1f} FPS{Colors.RESET}")
 
 
 def _print_optional_metrics(metrics: dict, cnt: int) -> None:
@@ -324,24 +336,24 @@ def print_sync_performance_summary(
     inf_fps = 1000.0 / avg_inf if avg_inf > 0 else 0.0
     post_fps = 1000.0 / avg_post if avg_post > 0 else 0.0
 
-    print("\n" + "=" * 50)
+    print(f"\n{Colors.BLUE}{Colors.BOLD}{'=' * 50}")
     print(f"{'PERFORMANCE SUMMARY':^50}")
-    print("=" * 50)
-    print(f" {'Pipeline Step':<15} {'Avg Latency':<15} {'Throughput':<15}")
-    print("-" * 50)
-    print(f" {'Read':<15} {avg_read:8.2f} ms     {read_fps:6.1f} FPS")
-    print(f" {'Preprocess':<15} {avg_pre:8.2f} ms     {pre_fps:6.1f} FPS")
-    print(f" {'Inference':<15} {avg_inf:8.2f} ms     {inf_fps:6.1f} FPS")
-    print(f" {'Postprocess':<15} {avg_post:8.2f} ms     {post_fps:6.1f} FPS")
+    print(f"{'=' * 50}{Colors.RESET}")
+    print(f" {Colors.BLUE}{'Pipeline Step':<15} {'Avg Latency':<15} {'Throughput':<15}")
+    print(f"{'-' * 50}{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Read':<15}{Colors.RESET} {Colors.YELLOW}{avg_read:8.2f} ms{Colors.RESET}     {Colors.CYAN}{read_fps:6.1f} FPS{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Preprocess':<15}{Colors.RESET} {Colors.YELLOW}{avg_pre:8.2f} ms{Colors.RESET}     {Colors.CYAN}{pre_fps:6.1f} FPS{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Inference':<15}{Colors.RESET} {Colors.YELLOW}{avg_inf:8.2f} ms{Colors.RESET}     {Colors.CYAN}{inf_fps:6.1f} FPS{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Postprocess':<15}{Colors.RESET} {Colors.YELLOW}{avg_post:8.2f} ms{Colors.RESET}     {Colors.CYAN}{post_fps:6.1f} FPS{Colors.RESET}")
 
     if display:
         _print_optional_metrics(metrics, cnt)
 
-    print("-" * 50)
-    print(f" {'Total Frames':<15} : {cnt:6d}")
-    print(f" {'Total Time':<15} : {elapsed:6.1f} s")
-    print(f" {'Overall FPS':<15} : {overall_fps:6.1f} FPS")
-    print("=" * 50)
+    print(f"{Colors.BLUE}{'-' * 50}{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Total Frames':<15}{Colors.RESET} : {Colors.YELLOW}{cnt:6d}{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Total Time':<15}{Colors.RESET} : {Colors.YELLOW}{elapsed:6.1f} s{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Overall FPS':<15}{Colors.RESET} : {Colors.CYAN}{overall_fps:6.1f} FPS{Colors.RESET}")
+    print(f"{Colors.BLUE}{Colors.BOLD}{'=' * 50}{Colors.RESET}")
 
 
 def _print_async_optional_metrics(metrics: dict, infer_completed: int) -> None:
@@ -366,7 +378,7 @@ def print_async_performance_summary_legacy(
 ):
     """Print legacy-format async performance metrics (matches C++ async format)."""
     if metrics.get("infer_completed", 0) == 0:
-        print("[WARNING] No frames were processed.")
+        print(f"{Colors.RED}[WARNING] No frames were processed.{Colors.RESET}")
         return
 
     overall_fps = cnt / elapsed if elapsed > 0 else 0.0
@@ -388,28 +400,28 @@ def print_async_performance_summary_legacy(
     pre_fps = 1000.0 / avg_pre if avg_pre > 0 else 0.0
     post_fps = 1000.0 / avg_post if avg_post > 0 else 0.0
 
-    print("\n" + "=" * 50)
+    print(f"\n{Colors.BLUE}{Colors.BOLD}{'=' * 50}")
     print(f"{'PERFORMANCE SUMMARY':^50}")
-    print("=" * 50)
-    print(f" {'Pipeline Step':<15} {'Avg Latency':<15} {'Throughput':<15}")
-    print("-" * 50)
-    print(f" {'Read':<15} {avg_read:8.2f} ms     {read_fps:6.1f} FPS")
-    print(f" {'Preprocess':<15} {avg_pre:8.2f} ms     {pre_fps:6.1f} FPS")
-    print(f" {'Inference':<15} {avg_inf:8.2f} ms     {infer_tp:6.1f} FPS*")
-    print(f" {'Postprocess':<15} {avg_post:8.2f} ms     {post_fps:6.1f} FPS")
+    print(f"{'=' * 50}{Colors.RESET}")
+    print(f" {Colors.BLUE}{'Pipeline Step':<15} {'Avg Latency':<15} {'Throughput':<15}{Colors.RESET}")
+    print(f"{Colors.BLUE}{'-' * 50}{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Read':<15}{Colors.RESET} {Colors.YELLOW}{avg_read:8.2f} ms{Colors.RESET}     {Colors.CYAN}{read_fps:6.1f} FPS{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Preprocess':<15}{Colors.RESET} {Colors.YELLOW}{avg_pre:8.2f} ms{Colors.RESET}     {Colors.CYAN}{pre_fps:6.1f} FPS{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Inference':<15}{Colors.RESET} {Colors.YELLOW}{avg_inf:8.2f} ms{Colors.RESET}     {Colors.CYAN}{infer_tp:6.1f} FPS*{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Postprocess':<15}{Colors.RESET} {Colors.YELLOW}{avg_post:8.2f} ms{Colors.RESET}     {Colors.CYAN}{post_fps:6.1f} FPS{Colors.RESET}")
 
     # Render/Save/Display rows (conditional)
     _print_async_optional_metrics(metrics, infer_completed)
 
-    print("-" * 50)
-    print(" * Async: turnaround latency (submit to callback)")
-    print("   Throughput measured independently")
-    print("-" * 50)
-    print(f" {'Infer Completed':<19} :    {infer_completed}")
-    print(f" {'Infer Inflight Avg':<19} :    {inflight_avg:.1f}")
-    print(f" {'Infer Inflight Max':<19} :      {inflight_max}")
-    print("-" * 50)
-    print(f" {'Total Frames':<19} :    {cnt}")
-    print(f" {'Total Time':<19} :    {elapsed:.1f} s")
-    print(f" {'Overall FPS':<19} :   {overall_fps:.1f} FPS")
-    print("=" * 50)
+    print(f"{Colors.BLUE}{'-' * 50}{Colors.RESET}")
+    print(f" {Colors.HEADER}* Async: turnaround latency (submit to callback){Colors.RESET}")
+    print(f" {Colors.HEADER}  Throughput measured independently{Colors.RESET}")
+    print(f"{Colors.BLUE}{'-' * 50}{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Infer Completed':<19}{Colors.RESET} : {Colors.YELLOW}{infer_completed:>7}{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Infer Inflight Avg':<19}{Colors.RESET} : {Colors.YELLOW}{inflight_avg:>7.1f}{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Infer Inflight Max':<19}{Colors.RESET} : {Colors.YELLOW}{inflight_max:>7}{Colors.RESET}")
+    print(f"{Colors.BLUE}{'-' * 50}{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Total Frames':<19}{Colors.RESET} : {Colors.YELLOW}{cnt:>7}{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Total Time':<19}{Colors.RESET} : {Colors.YELLOW}{elapsed:>5.1f} s{Colors.RESET}")
+    print(f" {Colors.GREEN}{'Overall FPS':<19}{Colors.RESET} : {Colors.CYAN}{overall_fps:>5.1f} FPS{Colors.RESET}")
+    print(f"{Colors.BLUE}{Colors.BOLD}{'=' * 50}{Colors.RESET}")
