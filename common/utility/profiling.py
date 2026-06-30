@@ -12,7 +12,7 @@ import threading
 class ProfilingMetrics:
     """
     Performance metrics collection for synchronous inference.
-    
+
     Tracks preprocessing, inference, and postprocessing times
     to provide overall and per-stage performance analysis.
     """
@@ -20,50 +20,50 @@ class ProfilingMetrics:
     inference_times: List[float] = field(default_factory=list)
     postprocess_times: List[float] = field(default_factory=list)
     total_times: List[float] = field(default_factory=list)
-    
+
     def add_preprocess_time(self, time_sec: float) -> None:
         """Add preprocessing time measurement."""
         self.preprocess_times.append(time_sec)
-    
+
     def add_inference_time(self, time_sec: float) -> None:
         """Add inference time measurement."""
         self.inference_times.append(time_sec)
-    
+
     def add_postprocess_time(self, time_sec: float) -> None:
         """Add postprocessing time measurement."""
         self.postprocess_times.append(time_sec)
-    
+
     def add_total_time(self, time_sec: float) -> None:
         """Add total frame time measurement."""
         self.total_times.append(time_sec)
-    
+
     def get_frame_count(self) -> int:
         """Get the number of processed frames."""
         return len(self.total_times) if self.total_times else len(self.inference_times)
-    
+
     def _get_avg(self, times: List[float]) -> float:
         """Calculate average time in milliseconds."""
         return (sum(times) / len(times) * 1000) if times else 0.0
-    
+
     def get_avg_preprocess_ms(self) -> float:
         return self._get_avg(self.preprocess_times)
-    
+
     def get_avg_inference_ms(self) -> float:
         return self._get_avg(self.inference_times)
-    
+
     def get_avg_postprocess_ms(self) -> float:
         return self._get_avg(self.postprocess_times)
-    
+
     def get_avg_total_ms(self) -> float:
         return self._get_avg(self.total_times)
-    
+
     def get_fps(self) -> float:
         """Calculate average frames per second."""
         if not self.total_times:
             return 0.0
         avg_time = sum(self.total_times) / len(self.total_times)
         return 1.0 / avg_time if avg_time > 0 else 0.0
-    
+
     def reset(self) -> None:
         """Reset all measurements."""
         self.preprocess_times.clear()
@@ -76,7 +76,7 @@ class ProfilingMetrics:
 class AsyncProfilingMetrics:
     """
     Performance metrics for asynchronous pipeline inference.
-    
+
     Tracks queue sizes, throughput, and latency for async processing.
     """
     preprocess_times: List[float] = field(default_factory=list)
@@ -85,61 +85,61 @@ class AsyncProfilingMetrics:
     end_to_end_times: List[float] = field(default_factory=list)
     queue_sizes: List[int] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
-    
+
     def add_preprocess_time(self, time_sec: float) -> None:
         with self._lock:
             self.preprocess_times.append(time_sec)
-    
+
     def add_inference_time(self, time_sec: float) -> None:
         with self._lock:
             self.inference_times.append(time_sec)
-    
+
     def add_postprocess_time(self, time_sec: float) -> None:
         with self._lock:
             self.postprocess_times.append(time_sec)
-    
+
     def add_end_to_end_time(self, time_sec: float) -> None:
         with self._lock:
             self.end_to_end_times.append(time_sec)
-    
+
     def add_queue_size(self, size: int) -> None:
         with self._lock:
             self.queue_sizes.append(size)
-    
+
     def get_frame_count(self) -> int:
         with self._lock:
             return len(self.end_to_end_times) if self.end_to_end_times else len(self.inference_times)
-    
+
     def _get_avg(self, times: List[float]) -> float:
         return (sum(times) / len(times) * 1000) if times else 0.0
-    
+
     def get_avg_preprocess_ms(self) -> float:
         with self._lock:
             return self._get_avg(self.preprocess_times)
-    
+
     def get_avg_inference_ms(self) -> float:
         with self._lock:
             return self._get_avg(self.inference_times)
-    
+
     def get_avg_postprocess_ms(self) -> float:
         with self._lock:
             return self._get_avg(self.postprocess_times)
-    
+
     def get_avg_end_to_end_ms(self) -> float:
         with self._lock:
             return self._get_avg(self.end_to_end_times)
-    
+
     def get_throughput(self) -> float:
         with self._lock:
             if not self.end_to_end_times:
                 return 0.0
             avg_time = sum(self.end_to_end_times) / len(self.end_to_end_times)
             return 1.0 / avg_time if avg_time > 0 else 0.0
-    
+
     def get_avg_queue_size(self) -> float:
         with self._lock:
             return sum(self.queue_sizes) / len(self.queue_sizes) if self.queue_sizes else 0.0
-    
+
     def reset(self) -> None:
         with self._lock:
             self.preprocess_times.clear()
@@ -152,43 +152,43 @@ class AsyncProfilingMetrics:
 class Timer:
     """
     Context manager for timing code blocks.
-    
+
     Usage:
         with Timer() as t:
             do_something()
         print(f"Elapsed: {t.elapsed_ms:.2f}ms")
     """
-    
+
     def __init__(self):
         self._start: float = 0.0
         self._end: float = 0.0
         self._elapsed: float = 0.0
-    
+
     def __enter__(self) -> 'Timer':
         self._start = time.perf_counter()
         return self
-    
+
     def __exit__(self, *args) -> None:
         self._end = time.perf_counter()
         self._elapsed = self._end - self._start
-    
+
     @property
     def elapsed(self) -> float:
         """Elapsed time in seconds."""
         return self._elapsed
-    
+
     @property
     def elapsed_ms(self) -> float:
         """Elapsed time in milliseconds."""
         return self._elapsed * 1000
 
 
-def print_performance_summary(metrics: ProfilingMetrics, 
+def print_performance_summary(metrics: ProfilingMetrics,
                               model_name: str = "Model",
                               show_individual: bool = False) -> None:
     """
     Print a formatted performance summary.
-    
+
     Args:
         metrics: ProfilingMetrics object with collected data
         model_name: Name of the model for display
@@ -200,14 +200,14 @@ def print_performance_summary(metrics: ProfilingMetrics,
     print(f"  Total Frames Processed: {metrics.get_frame_count()}")
     print(f"  Average FPS: {metrics.get_fps():.2f}")
     print(f"{'='*60}")
-    
+
     if show_individual:
         print("  Stage Breakdown:")
         print(f"    Preprocessing:  {metrics.get_avg_preprocess_ms():>8.2f} ms")
         print(f"    Inference:      {metrics.get_avg_inference_ms():>8.2f} ms")
         print(f"    Postprocessing: {metrics.get_avg_postprocess_ms():>8.2f} ms")
         print(f"{'='*60}")
-    
+
     print(f"  Average Total:    {metrics.get_avg_total_ms():>8.2f} ms/frame")
     print(f"{'='*60}\n")
 
@@ -216,7 +216,7 @@ def print_async_performance_summary(metrics: AsyncProfilingMetrics,
                                     model_name: str = "Model") -> None:
     """
     Print a formatted performance summary for async processing.
-    
+
     Args:
         metrics: AsyncProfilingMetrics object with collected data
         model_name: Name of the model for display
@@ -240,7 +240,7 @@ def print_async_performance_summary(metrics: AsyncProfilingMetrics,
 def print_image_processing_summary(t_start, t0, t1, t2, t3, t4=None, t5=None):
     """
     Print legacy-format image processing summary.
-    
+
     Args:
         t_start: Start time (before read)
         t0: After read
@@ -323,7 +323,7 @@ def print_sync_performance_summary(
     pre_fps = 1000.0 / avg_pre if avg_pre > 0 else 0.0
     inf_fps = 1000.0 / avg_inf if avg_inf > 0 else 0.0
     post_fps = 1000.0 / avg_post if avg_post > 0 else 0.0
-    
+
     print("\n" + "=" * 50)
     print(f"{'PERFORMANCE SUMMARY':^50}")
     print("=" * 50)
