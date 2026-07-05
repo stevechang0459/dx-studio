@@ -17,8 +17,60 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QFormLayout, QLabel, QPushButton,
                              QFileDialog, QDoubleSpinBox, QSpinBox, QCheckBox,
                              QMessageBox, QGroupBox, QTabWidget, QTextEdit, QComboBox)
-from PyQt5.QtCore import Qt, QThread, QTimer
+from PyQt5.QtCore import Qt, QThread, QTimer, QProcess, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap, QColor
+
+
+class VideoRecordThread(QThread):
+    """
+    A dedicated QThread for video encoding and disk I/O.
+    Using QThread allows us to emit signals to the main GUI thread safely.
+    """
+    # Signal emitted when all frames are written and the file is closed safely
+    recording_finished = pyqtSignal(str)
+
+    def __init__(self, output_path: str, fps: float, width: int, height: int):
+        super().__init__()
+        self.output_path = output_path
+        self.fps = fps
+        self.width = width
+        self.height = height
+        # Reduced maxsize to prevent massive RAM usage (60 frames ~= 2 secs of buffer)
+        self.frame_queue = queue.Queue(maxsize=60)
+        self.is_running = True
+        self.writer = None
+
+    def run(self):
+        """Initializes the VideoWriter and continuously consumes frames from the queue."""
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        self.writer = cv2.VideoWriter(self.output_path, fourcc, self.fps, (self.width, self.height))
+
+        # Keep running until explicitly stopped AND the queue is completely emptied
+        while self.is_running or not self.frame_queue.empty():
+            try:
+                # Wait for up to 0.1s for a new frame to arrive
+                frame = self.frame_queue.get(timeout=0.1)
+
+                # Ensure the writer is properly opened before writing
+                if frame is not None and self.writer and self.writer.isOpened():
+                    self.writer.write(frame)
+
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"[VideoRecordThread] Error writing frame: {e}")
+
+        # Gracefully release the resource to ensure the MP4 header is finalized
+        if self.writer:
+            self.writer.release()
+
+        # Notify the main thread that the file is ready
+        self.recording_finished.emit(self.output_path)
+
+    def stop(self):
+        """Signals the thread to stop processing new incoming frames."""
+        self.is_running = False
+
 
 # ---------------------------------------------------------
 # Stream Redirector for Capturing Console Logs (Thread-safe via queue)
@@ -194,13 +246,191 @@ class InferenceGUI(QWidget):
 
         # Setup Regex for stripping ANSI codes before saving to file
         self.ansi_escape = re.compile(r'\x1b\[([0-9;]*)m')
+        self.ansi_stripper = re.compile(r'\x1b\[[0-9;?]*[a-zA-Z]')
 
         # Start a QTimer to poll the queues at ~30Hz (33ms)
         self.poll_timer = QTimer(self)
         self.poll_timer.timeout.connect(self.poll_queues)
         self.poll_timer.start(33)
 
+        # Initialize vatiable to store dxtop output
+        self.dxtop_text = ""
+
+        # Setup QProces to run dxtop asynchronously in the background
+        self.dxtop_process = QProcess(self)
+
+        # Connect rhe native readyReadStandardOutput signal to our update function
+        self.dxtop_process.readyReadStandardOutput.connect(self.update_dxtop_info)
+
+        # Start the continuous terminal process
+        self.dxtop_process.start("dxtop")
+
+        self.show_res_flag = False
+        self.resize_timer = QTimer(self)
+        self.resize_timer.setSingleShot(True)
+        self.resize_timer.timeout.connect(self.hide_resolution_osd)
+
+        self._is_programmatic_resize = False
+        self.video_index = -1
+
         self.init_ui()
+
+    def hide_resolution_osd(self):
+        """Hides the resolution text after the user stops dragging the window."""
+        # self.show_res_flag = False
+
+    def resizeEvent(self, event):
+        """Overrides the default resize event to trigger the resolution OSD."""
+        super().resizeEvent(event)
+
+        self.show_res_flag = True
+        # Restart the timer to keep text visible while dragging.
+        # It will hide 1.5 seconds after dragging stops.
+        self.resize_timer.start(10000)
+
+        if getattr(self, '_is_programmatic_resize', False):
+            self._is_programmatic_resize = False
+        else:
+            # Reset the combo box to "Free Resize" if the user manually drags the window
+            if hasattr(self, 'resolution_combo'):
+                self.resolution_combo.blockSignals(True)
+                self.resolution_combo.setCurrentIndex(0)
+                self.resolution_combo.blockSignals(False)
+
+    def update_dxtop_info(self):
+        """
+        Slot triggered by QProcess when new stdout data is available.
+        Uses a 2D grid approach with a complete VT command set to perfectly emulate dxtop.
+        """
+        raw_data = self.dxtop_process.readAllStandardOutput().data()
+
+        try:
+            # Initialize a persistent buffer to handle chunked output from OS pipes
+            if not hasattr(self, 'dxtop_buffer'):
+                self.dxtop_buffer = ""
+
+            self.dxtop_buffer += raw_data.decode('utf-8', errors='ignore')
+
+            # 1. True Frame Delimiter (Home + Clear Screen sequences)
+            if '\x1b[H\x1b[2J' in self.dxtop_buffer:
+                frames = self.dxtop_buffer.split('\x1b[H\x1b[2J')
+                self.dxtop_buffer = frames[-1]
+
+            # Return early if buffer size suggests an incomplete frame
+            if len(self.dxtop_buffer) < 50:
+                return
+
+            text = self.dxtop_buffer
+
+            # 2. Precision fix for the "v2.5" split issue
+            # Intercepts and swaps "v2^[[6;1H.5" into "v2.5^[[6;1H" before VT grid processing
+            text = re.sub(
+                r'(\d)\x1b\[(\d+;\d+)[Hf]\.5',
+                lambda m: f"{m.group(1)}.5\x1b[{m.group(2)}H",
+                text
+            )
+
+            # 3. Pre-processing: Clean up colors and unnecessary terminal commands
+            text = re.sub(r'\x1b\].*?(?:\x07|\x1b\\)', '', text)  # Strip OSC Titles
+            text = re.sub(r'\x1b\[[0-9;]*m', '', text)           # Strip ANSI Colors
+            text = re.sub(r'\x1b\([a-zA-Z]', '', text)           # Strip Charsets (fixes ^[(B)
+            text = re.sub(r'\x1b\[\?\d+[hl]', '', text)          # Strip Hide cursor & Modes
+            text = re.sub(r'\x1b[=>]', '', text)                 # Strip Keypad modes
+
+            # Convert degree symbol to a dot to avoid fallback destruction below
+            text = text.replace('°', '.')
+
+            # Fallback for OpenCV: Convert unsupported Unicode blocks to ASCII pipes
+            text = re.sub(r'[^\x00-\x7F]', '|', text)
+
+            # Convert 'X' commands to literal spaces (e.g., ^[[16X -> 16 spaces)
+            text = re.sub(r'\x1b\[(\d+)X', lambda m: ' ' * int(m.group(1)), text)
+
+            # Convert 'b' commands to repeat characters (restores UI horizontal dividers)
+            text = re.sub(r'([^\x1b\n])\x1b\[(\d+)b', lambda m: m.group(1) * (int(m.group(2)) + 1), text)
+
+            # 4. Virtual Terminal Layout Engine
+            # Create a 40x120 2D array representing character cells
+            grid = [[' ' for _ in range(120)] for _ in range(40)]
+            cursor_y, cursor_x = 0, 0
+
+            # Tokenize the stream into text chunks and cursor commands
+            tokens = re.split(r'(\x1b\[[0-9;]*[a-zA-Z]|\r|\n)', text)
+
+            for token in tokens:
+                if not token:
+                    continue
+
+                if token == '\r':
+                    cursor_x = 0
+                elif token == '\n':
+                    cursor_y += 1
+                    cursor_x = 0
+                elif token.startswith('\x1b['):
+                    cmd_type = token[-1]
+                    params = token[2:-1].split(';')
+
+                    try:
+                        # Emulate core Virtual Terminal (VT) positioning behaviors
+                        if cmd_type in ('H', 'f'):
+                            # Absolute positioning: ESC [ Y ; X H
+                            cursor_y = max(0, int(params[0]) - 1) if params[0] else 0
+                            cursor_x = max(0, int(params[1]) - 1) if len(params) > 1 and params[1] else 0
+                        elif cmd_type == 'd':
+                            # Absolute row assignment
+                            cursor_y = max(0, int(params[0]) - 1) if params[0] else 0
+                        elif cmd_type == 'G':
+                            # Absolute column assignment
+                            cursor_x = max(0, int(params[0]) - 1) if params[0] else 0
+                        elif cmd_type == 'A':
+                            # Move up
+                            cursor_y = max(0, cursor_y - (int(params[0]) if params[0] else 1))
+                        elif cmd_type == 'B':
+                            # Move down
+                            cursor_y += (int(params[0]) if params[0] else 1)
+                        elif cmd_type == 'C':
+                            # Move right
+                            cursor_x += (int(params[0]) if params[0] else 1)
+                        elif cmd_type == 'D':
+                            # Move left
+                            cursor_x = max(0, cursor_x - (int(params[0]) if params[0] else 1))
+                        elif cmd_type == 'J':
+                            # Clear display based on parameter
+                            if params[0] == '2':
+                                grid = [[' ' for _ in range(120)] for _ in range(40)]
+                        elif cmd_type == 'K':
+                            # Clear line from cursor rightwards
+                            if cursor_y < 40:
+                                for i in range(cursor_x, 120):
+                                    grid[cursor_y][i] = ' '
+                    except ValueError:
+                        pass
+                else:
+                    # Write regular text tokens directly to the mapped grid
+                    for char in token:
+                        if cursor_y < 40 and cursor_x < 120:
+                            grid[cursor_y][cursor_x] = char
+                        cursor_x += 1
+
+            # 5. Render the Grid to a string representation
+            rendered_lines = []
+            for row in grid:
+                # Strip trailing spaces to keep alignment clean
+                line = "".join(row).rstrip()
+                # Omit completely blank lines
+                if line:
+                    rendered_lines.append(line)
+
+            final_text = '\n'.join(rendered_lines)
+
+            # Restrict excessively long horizontal lines for UI cleanliness
+            final_text = re.sub(r'-{30,}', '-' * 50, final_text)
+
+            if final_text:
+                self.dxtop_text = final_text
+
+        except Exception as e:
+            print(f"Error parsing dxtop: {e}")
 
     def init_ui(self):
         self.setWindowTitle('DX Studio')
@@ -229,6 +459,11 @@ class InferenceGUI(QWidget):
         self.display_label = QLabel("Waiting for video stream...")
         self.display_label.setAlignment(Qt.AlignCenter)
         self.display_label.setStyleSheet("background-color: #111; color: #888; font-size: 24px;")
+
+        # Override the minimum size hint to prevent the window from being locked
+        # when a large QPixmap is set. This allows the user to shrink the window.
+        self.display_label.setMinimumSize(1, 1)
+
         layout.addWidget(self.display_label)
         self.tab_display.setLayout(layout)
 
@@ -254,7 +489,8 @@ class InferenceGUI(QWidget):
         # 1. Setup Python Script Input
         self.script_input = QComboBox()
         self.script_input.setEditable(True)
-        default_script = os.path.normpath(os.path.join(base_dir, "object_detection/yolov5s/yolov5s_async.py"))
+        # default_script = os.path.normpath(os.path.join(base_dir, "object_detection/yolov5s/yolov5s_async.py"))
+        default_script = os.path.normpath(os.path.join(base_dir, "object_detection/yolo26x/yolo26x_async.py"))
         self.script_input.addItem(default_script)
 
         self.script_btn = QPushButton("Browse")
@@ -270,7 +506,8 @@ class InferenceGUI(QWidget):
         populate_combo(self.model_input, model_dir, ('.dxnn',))
         # Default to YOLOv5S if available
         for i in range(self.model_input.count()):
-            if "YoloV5S.dxnn" in self.model_input.itemText(i):
+            # if "YoloV5S.dxnn" in self.model_input.itemText(i):
+            if "yolo26x.dxnn" in self.model_input.itemText(i):
                 self.model_input.setCurrentIndex(i)
                 break
 
@@ -304,10 +541,23 @@ class InferenceGUI(QWidget):
         self.fps_spinbox.setRange(0.0, 144.0)
         self.fps_spinbox.setSingleStep(1.0)
         self.fps_spinbox.setValue(30.0)
-        param_layout.addRow("Target FPS (0 for unlimited):", self.fps_spinbox)
+        self.fps_spinbox.setEnabled(False)
+
+        # Create Auto FPS checkbox to match native video frame rate
+        self.auto_fps_checkbox = QCheckBox("Auto FPS")
+        self.auto_fps_checkbox.setChecked(True)
+        self.auto_fps_checkbox.stateChanged.connect(self._toggle_fps_mode)
+
+        # Group the spinbox and checkbox horizontally
+        fps_layout = QHBoxLayout()
+        fps_layout.addWidget(self.fps_spinbox)
+        fps_layout.addWidget(self.auto_fps_checkbox)
+
+        # Add the combined layout to the form
+        param_layout.addRow("Target FPS (0 for unlimited):", fps_layout)
 
         self.loop_spinbox = QSpinBox()
-        self.loop_spinbox.setRange(1, 10000)
+        self.loop_spinbox.setRange(-1, 10000)
         self.loop_spinbox.setValue(1)
         param_layout.addRow("Loop Count:", self.loop_spinbox)
 
@@ -320,10 +570,33 @@ class InferenceGUI(QWidget):
         self.show_log_checkbox = QCheckBox("Show Log (--show-log)")
         self.auto_loop_checkbox = QCheckBox("Auto Loop Playlist")
         self.auto_loop_checkbox.setChecked(1)
+        self.show_dxtop_checkbox = QCheckBox("Show DXTOP (OSD)")
+        self.show_dxtop_checkbox.setChecked(False)
+
+        self.record_video_checkbox = QCheckBox("Record OSD Video (MP4)")
+        self.record_video_checkbox.setChecked(False)
+
+        self.resolution_combo = QComboBox()
+        self.resolution_combo.addItems([
+            "Free Resize", "640x480 (4:3)", "800x600 (4:3)",
+            "1024x768 (4:3)", "1280x720 (16:9)", "1920x1080 (16:9)",
+            "2160x1440 (3:2)", "3840x2160 (16:9)"
+        ])
+        self.resolution_combo.currentTextChanged.connect(self.change_window_resolution)
+
+        # Create a ComboBox for OSD text size selection
+        self.osd_size_combo = QComboBox()
+        self.osd_size_combo.addItems(["Small", "Medium", "Large"])
+        self.osd_size_combo.setCurrentIndex(1)  # Set default to 'Medium'
+        self.osd_size_combo.setFixedWidth(90)   # Keep it compact
 
         flag_layout.addWidget(self.save_checkbox)
         flag_layout.addWidget(self.show_log_checkbox)
         flag_layout.addWidget(self.auto_loop_checkbox)
+        flag_layout.addWidget(self.show_dxtop_checkbox)
+        flag_layout.addWidget(self.record_video_checkbox)
+        flag_layout.addWidget(self.osd_size_combo)
+        flag_layout.addWidget(self.resolution_combo)
         flag_group.setLayout(flag_layout)
         layout.addWidget(flag_group)
 
@@ -344,6 +617,45 @@ class InferenceGUI(QWidget):
         layout.addLayout(btn_layout)
         layout.addStretch()
         self.tab_settings.setLayout(layout)
+
+    def _toggle_fps_mode(self, state):
+        """
+        Disables the FPS spinbox when Auto mode is enabled.
+        Prevents user confusion by locking manual input.
+        """
+        if state == Qt.Checked:
+            self.fps_spinbox.setEnabled(False)
+        else:
+            self.fps_spinbox.setEnabled(True)
+
+    def change_window_resolution(self, text):
+        """Resizes the main window to ensure the display_label matches the target resolution EXACTLY."""
+        if text == "Free Resize":
+            return
+
+        try:
+            # 1. Parse the target dimensions from the combo box string (e.g., "1280x720 (16:9)")
+            dim_part = text.split()[0]  # Extracts "1280x720"
+            target_w_str, target_h_str = dim_part.split('x')
+            target_w = int(target_w_str)
+            target_h = int(target_h_str)
+
+            # 2. Calculate the UI overhead (everything EXCEPT the display_label)
+            # This accounts for margins, toolbars, splitters, and padding.
+            ui_overhead_width = self.width() - self.display_label.width()
+            ui_overhead_height = self.height() - self.display_label.height()
+
+            # 3. Calculate the new total window size required
+            new_window_width = target_w + ui_overhead_width
+            new_window_height = target_h + ui_overhead_height
+
+            self._is_programmatic_resize = True
+
+            # 4. Apply the exact resize to the main GUI window
+            self.resize(new_window_width, new_window_height)
+
+        except (ValueError, IndexError):
+            pass
 
     def setup_console_tab(self):
         layout = QVBoxLayout()
@@ -393,8 +705,112 @@ class InferenceGUI(QWidget):
         except Exception:
             pass
 
+    def on_inference_finished(self):
+        """
+        Slot called when the native QThread finishes.
+        Guaranteed to execute even if the target script crashes unexpectedly.
+        """
+        self.inference_thread = None
+
+        # 1. Drain the queues one last time to catch any remaining logs or frames
+        #    before the UI resets, ensuring no resources are left behind.
+        self.poll_queues()
+
+        # 2. Safely shut down the background video recording thread
+        if getattr(self, 'video_recorder', None) is not None:
+            self.video_recorder.stop()
+
+        # 3. Handle Auto-Loop transition safely
+        if not self._manual_stop:
+            loop_val = self.loop_spinbox.value()
+
+            # Record the starting video index on the very first natural finish
+            if self.video_index == -1:
+                self.video_index = self.video_input.currentIndex()
+
+            current_idx = self.video_input.currentIndex()
+
+            # Determine the index of the NEXT video to be played
+            if getattr(self, 'auto_loop_checkbox', None) and self.auto_loop_checkbox.isChecked():
+                next_idx = (current_idx + 1) % self.video_input.count()
+            else:
+                next_idx = current_idx  # Single video loop stays on the same index
+
+            # A full cycle is complete if the next video is our starting video
+            if next_idx == self.video_index:
+                if loop_val > 0:
+                    loop_val -= 1
+                    self.loop_spinbox.setValue(loop_val)
+
+            # If currently -1 (infinite loop) or still greater than 0 after decrement, continue playing
+            if loop_val == -1 or loop_val > 0:
+
+                # Determine whether to switch to the next video based on the checkbox
+                if getattr(self, 'auto_loop_checkbox', None) and self.auto_loop_checkbox.isChecked():
+                    msg = "[SYSTEM] Auto-looping to next video...\n"
+                    # Apply the calculated next index
+                    if hasattr(self, 'video_input') and self.video_input.count() > 0:
+                        self.video_input.setCurrentIndex(next_idx)
+                else:
+                    # Single video loop
+                    msg = "[SYSTEM] Looping current video...\n"
+
+                self.write_to_log_file(msg)
+                self.console_output.insertPlainText(msg)
+                self.console_output.ensureCursorVisible()
+
+                # Use QTimer to yield control back to the event loop before restarting
+                QTimer.singleShot(100, self.execute_command)
+                return  # Continue playback, return directly to avoid cleanup
+
+        # Reset the tracker for the next manual run
+        self.video_index = -1
+
+        # Normal completion or manually stopped
+        if hasattr(self, 'run_btn'):
+            self.run_btn.setEnabled(True)
+        if hasattr(self, 'stop_btn'):
+            self.stop_btn.setEnabled(False)
+
+        msg = "[SYSTEM] Process finished and resources cleaned up.\n"
+        self.write_to_log_file(msg)
+        self.console_output.insertPlainText(msg)
+        self.console_output.ensureCursorVisible()
+
+    def on_recording_saved(self, saved_path: str):
+            """
+            Slot triggered entirely asynchronously when the VideoRecordThread completes its task.
+            Safe to perform GUI operations here.
+            """
+            # QMessageBox.information(
+            #     self,
+            #     "Recording Saved",
+            #     f"OSD Video successfully saved to:\n{saved_path}"
+            # )
+
+            print(f"OSD Video successfully saved to:\n{saved_path}")
+
+            # Clean up the thread resource properly
+            if getattr(self, 'video_recorder', None):
+                self.video_recorder.deleteLater()
+                self.video_recorder = None
+
+            print("Inference process finished and resources cleaned up.")
+
     def execute_command(self):
         self._manual_stop = False
+
+        if hasattr(self, 'record_video_checkbox') and self.record_video_checkbox.isChecked():
+            model_name = self.model_input.currentText()
+            model_name = os.path.basename(model_name)
+            model_name, _ = os.path.splitext(model_name)
+
+            video_name = self.video_input.currentText()
+            video_name = os.path.basename(video_name)
+            video_name, _ = os.path.splitext(video_name)
+
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            self.output_video_path = f"dx_studio_record_{model_name}_{video_name}_{timestamp}.mp4"
 
         script = self.script_input.currentText().strip()
         model = self.model_input.currentText().strip()
@@ -404,13 +820,17 @@ class InferenceGUI(QWidget):
             QMessageBox.warning(self, "Warning", "Python Script and DXNN Model are required fields.")
             return
 
-        # Prepare arguments (excluding the script name itself, as it's passed separately)
+        # Prepare arguments
         cmd_args = ["--model", model]
         if video: cmd_args.extend(["--video", video])
-        cmd_args.extend(["--fps", str(self.fps_spinbox.value())])
+        if self.auto_fps_checkbox.isChecked():
+            cmd_args.extend(["--fps", "-1"])
+        else:
+            cmd_args.extend(["--fps", str(self.fps_spinbox.value())])
 
-        loop_val = self.loop_spinbox.value()
-        if loop_val > 1: cmd_args.extend(["--loop", str(loop_val)])
+        # loop_val = self.loop_spinbox.value()
+        # if loop_val > 1: cmd_args.extend(["--loop_val", str(loop_val)])
+        self.loop_val = self.loop_spinbox.value()
         if self.save_checkbox.isChecked(): cmd_args.append("--save")
         if self.show_log_checkbox.isChecked(): cmd_args.append("--show-log")
 
@@ -428,6 +848,9 @@ class InferenceGUI(QWidget):
 
         # Create and start the inference thread
         self.inference_thread = InferenceThread(script, cmd_args, self.log_queue, self.frame_queue)
+
+        # Connect the native finished signal to our cleanup slot
+        self.inference_thread.finished.connect(self.on_inference_finished)
 
         self.run_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
@@ -475,60 +898,21 @@ class InferenceGUI(QWidget):
         # Fetch the current OS default text color from the active application palette
         default_text_color = QApplication.palette().text().color()
 
-        # 1. Process Logs (drain the queue)
+        # Process Logs (drain the queue)
         while not self.log_queue.empty():
             try:
                 is_error, text = self.log_queue.get_nowait()
-                if text == "___THREAD_FINISHED___":
-                    if self.inference_thread is not None:
-                        # Wait up to 1 second for thread to terminate naturally
-                        if not self.inference_thread.wait(1000):
-                            self.console_output.setTextColor(QColor("red"))
-                            self.console_output.insertPlainText("[WARNING] Thread hung! Force killing...\n")
-                            self.console_output.setTextColor(default_text_color)
-
-                            self.inference_thread.terminate()
-                            self.inference_thread.wait()
-                        self.inference_thread = None
-
-                    # --- Auto-Loop Logic ---
-                    if self.auto_loop_checkbox.isChecked() and not self._manual_stop:
-                        msg = "[SYSTEM] Auto-looping to next video...\n"
-                        self.write_to_log_file(msg)
-                        self.console_output.insertPlainText(msg)
-                        self.console_output.ensureCursorVisible()
-
-                        # Increment the video combo box index, wrapping around
-                        if self.video_input.count() > 0:
-                            current_idx = self.video_input.currentIndex()
-                            next_idx = (current_idx + 1) % self.video_input.count()
-                            self.video_input.setCurrentIndex(next_idx)
-
-                        # FIX UI FREEZE: Use QTimer to yield back to event loop before starting new thread
-                        QTimer.singleShot(100, self.execute_command)
-                    else:
-                        # Normal finish or manually stopped
-                        self.run_btn.setEnabled(True)
-                        self.stop_btn.setEnabled(False)
-                        msg = "[SYSTEM] Process finished.\n"
-                        self.write_to_log_file(msg)
-                        self.console_output.insertPlainText(msg)
-                        self.console_output.ensureCursorVisible()
-
-                elif is_error:
-                    self.write_to_log_file(text)
+                self.write_to_log_file(text)
+                if is_error:
                     self.insert_ansi_text(text, QColor("red"))
-                    # Revert pen to default theme color
-                    self.console_output.setTextColor(default_text_color)
-                    self.console_output.ensureCursorVisible()
                 else:
-                    self.write_to_log_file(text)
                     self.insert_ansi_text(text, default_text_color)
-                    self.console_output.ensureCursorVisible()
+                self.console_output.setTextColor(default_text_color)
+                self.console_output.ensureCursorVisible()
             except queue.Empty:
                 break
 
-        # 2. Process Frames (Frame Dropping: keep only the newest frame)
+        # Process Frames (Frame Dropping: keep only the newest frame)
         latest_frame = None
         while not self.frame_queue.empty():
             try:
@@ -542,6 +926,207 @@ class InferenceGUI(QWidget):
 
     def render_frame(self, frame):
         """Converts OpenCV BGR image to QPixmap and scales it to the label."""
+
+        # Calculate dynamic resolution ratio based on 1080p
+        # This ensures OSD elements scale proportionately across different input video sizes
+        frame_h, frame_w = frame.shape[:2]
+        ratio = frame_h / 1080.0
+
+        # =========================================================
+        # 1. Draw Model Info & Video Source (Top-Left)
+        # =========================================================
+        try:
+            model_name = self.model_input.itemText(self.model_input.currentIndex())
+            model_name = os.path.basename(model_name)
+            video_name = self.video_input.itemText(self.video_input.currentIndex())
+            video_name = os.path.basename(video_name)
+
+            info_texts = [f"Source: {video_name}", f"Model: {model_name}"]
+
+            # Dynamic text scaling for top-left OSD
+            info_font_scale = 1.0 * ratio
+            info_thick = max(1, int(2 * ratio))
+
+            # Find the maximum width among the info text lines for bounding box calculation
+            max_text_w = 0
+            for text in info_texts:
+                (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, info_font_scale, info_thick)
+                if w > max_text_w:
+                    max_text_w = w
+
+            # Position at top-left with safe padding boundaries
+            margin = max(10, int(20 * ratio))
+            padding = max(5, int(10 * ratio))
+            line_spacing = max(20, int(35 * ratio))
+
+            box_x1 = margin
+            box_y1 = margin
+            box_x2 = box_x1 + max_text_w + padding * 2
+            box_h = padding * 2 + (len(info_texts) - 1) * line_spacing + h
+            box_y2 = box_y1 + box_h
+
+            # Draw semi-transparent background overlay
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (box_x1, box_y1), (box_x2, box_y2), (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+
+            # Draw standard white text line by line
+            text_x = box_x1 + padding
+            text_y = box_y1 + padding + h
+            for text in info_texts:
+                cv2.putText(frame, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX,
+                            info_font_scale, (255, 255, 255), info_thick, cv2.LINE_AA)
+                text_y += line_spacing
+
+        except Exception:
+            pass
+
+        # =========================================================
+        # 2. Draw DXTOP Monitor (Top-Right)
+        # =========================================================
+        if hasattr(self, 'show_dxtop_checkbox') and self.show_dxtop_checkbox.isChecked() and self.dxtop_text:
+
+            # Default to Medium size if combo box is not yet initialized
+            size_mode = "Medium"
+            if hasattr(self, 'osd_size_combo'):
+                size_mode = self.osd_size_combo.currentText()
+
+            # Assign rendering parameters based on the selected size
+            if size_mode == "Small":
+                # Small
+                base_start_y = 25
+                base_line_height = 20
+                base_font_scale = 0.5
+                base_outline_thick = 2
+                base_inner_thick = 1
+            elif size_mode == "Medium":
+                # Medium
+                base_start_y = 28
+                base_line_height = 25
+                base_font_scale = 0.65
+                base_outline_thick = 2
+                base_inner_thick = 1
+            else:
+                # Large
+                base_start_y = 30
+                base_line_height = 30
+                base_font_scale = 0.8
+                base_outline_thick = 4
+                base_inner_thick = 2
+
+            # Apply dynamic ratio to base values
+            start_y = max(10, int(base_start_y * ratio))
+            line_height = int(base_line_height * ratio)
+            font_scale = base_font_scale * ratio
+            outline_thick = max(1, int(base_outline_thick * ratio))
+            inner_thick = max(1, int(base_inner_thick * ratio))
+
+            lines = self.dxtop_text.split('\n')
+
+            # Calculate the maximum width of the DXTOP block to align it to the right edge
+            max_dxtop_w = 0
+            for line in lines:
+                (w, _), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, font_scale, inner_thick)
+                if w > max_dxtop_w:
+                    max_dxtop_w = w
+
+            # Position at top-right by subtracting width from total frame width
+            dxtop_x = frame_w - max_dxtop_w - max(10, int(20 * ratio))
+
+            for i, line in enumerate(lines):
+                y_pos = start_y + (i * line_height)
+
+                # Draw text outline for visibility against bright backgrounds
+                cv2.putText(frame, line, (dxtop_x, y_pos), cv2.FONT_HERSHEY_SIMPLEX,
+                            font_scale, (0, 0, 0), outline_thick, cv2.LINE_AA)
+
+                # Draw the actual inner green text
+                cv2.putText(frame, line, (dxtop_x, y_pos), cv2.FONT_HERSHEY_SIMPLEX,
+                            font_scale, (0, 255, 0), inner_thick, cv2.LINE_AA)
+
+        # =========================================================
+        # 3. Draw Dynamic Resolution OSD (Bottom-Left)
+        # =========================================================
+        if getattr(self, 'show_res_flag', False):
+            current_w = self.display_label.width()
+            current_h = self.display_label.height()
+            res_text = f"Resolution: {current_w} x {current_h}"
+
+            # Scale properties for resolution prompt
+            res_font_scale = 1.0 * ratio
+            res_inner_thick = max(1, int(2 * ratio))
+
+            (text_w, text_h), baseline = cv2.getTextSize(res_text, cv2.FONT_HERSHEY_SIMPLEX, res_font_scale, res_inner_thick)
+
+            margin = max(10, int(20 * ratio))
+            padding = max(5, int(10 * ratio))
+
+            box_x1 = margin
+            box_y2 = frame_h - margin
+            box_x2 = box_x1 + text_w + padding * 2
+            box_y1 = box_y2 - (text_h + baseline + padding * 2)
+
+            # Draw semi-transparent black background behind the yellow text
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (box_x1, box_y1), (box_x2, box_y2), (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+
+            text_x = box_x1 + padding
+            text_y = box_y2 - padding - baseline
+
+            # Render vibrant yellow text
+            cv2.putText(frame, res_text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX,
+                        res_font_scale, (0, 255, 255), res_inner_thick, cv2.LINE_AA)
+
+        # =========================================================
+        # 4. Record the final composited frame (Asynchronous Queueing)
+        # =========================================================
+        if hasattr(self, 'record_video_checkbox') and self.record_video_checkbox.isChecked():
+            # Initialize the background recording thread on the first frame
+            if getattr(self, 'video_recorder', None) is None:
+
+                target_fps = 30.0  # Safe fallback
+
+                # Extract the exact native FPS directly from the selected video source
+                if hasattr(self, 'auto_fps_checkbox') and self.auto_fps_checkbox.isChecked():
+                    video_path = self.video_input.currentText().strip()
+                    if video_path:
+                        # Handle both camera index (int) and video file path (string)
+                        source = int(video_path) if video_path.isdigit() else video_path
+
+                        # Briefly open the video source to parse its header properties
+                        cap = cv2.VideoCapture(source)
+                        if cap.isOpened():
+                            native_fps = cap.get(cv2.CAP_PROP_FPS)
+                            # Verify if the returned FPS is a valid, positive number
+                            if native_fps > 0:
+                                target_fps = native_fps
+                        cap.release()
+                else:
+                    # Use manually assigned FPS from the spinbox
+                    if hasattr(self, 'fps_spinbox') and self.fps_spinbox.value() > 0:
+                        target_fps = float(self.fps_spinbox.value())
+
+                print(f"target_fps: {target_fps}")
+
+                output_path = getattr(self, 'output_video_path', 'output.mp4')
+
+                # Spawn and start the worker thread
+                self.video_recorder = VideoRecordThread(output_path, target_fps, frame_w, frame_h)
+
+                # Connect the thread's finished signal to our UI callback
+                self.video_recorder.recording_finished.connect(self.on_recording_saved)
+                self.video_recorder.start()
+
+            # Push the frame into the queue.
+            # We use .copy() to prevent the main thread from mutating the image while the writer is saving it.
+            if self.video_recorder.isRunning():
+                try:
+                    self.video_recorder.frame_queue.put_nowait(frame.copy())
+                except queue.Full:
+                    # Drop frame automatically if the disk is too slow, protecting UI from OOM crash
+                    print("[Warning] Video encoding queue is full. Dropping frame.")
+
         # Convert BGR (OpenCV format) to RGB
         rgb_img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb_img.shape

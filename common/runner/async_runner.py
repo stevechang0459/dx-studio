@@ -1119,21 +1119,35 @@ class AsyncRunner:
 
     def _run_stream(self, source: Union[str, int], display: bool) -> None:
         source_label = f"camera:{source}" if isinstance(source, int) else str(source)
-        if self._verbose:
-            logger.info(f"Input: {source_label}")
-            probe_cap = cv2.VideoCapture(source)
-            if probe_cap.isOpened():
+
+        # Probe the video source unconditionally to fetch the native FPS safely
+        probe_cap = cv2.VideoCapture(source)
+        native_fps = 30.0  # Fallback FPS
+
+        if probe_cap.isOpened():
+            detected_fps = probe_cap.get(cv2.CAP_PROP_FPS)
+            if detected_fps > 0:
+                native_fps = detected_fps
+
+            if self._verbose:
                 w = int(probe_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 h = int(probe_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                fps = probe_cap.get(cv2.CAP_PROP_FPS)
                 total = int(probe_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                probe_cap.release()
-                logger.info(f"Resolution: {w}x{h}, FPS: {fps:.1f}, "
-                      f"Frames: {total if total > 0 else 'N/A'}")
-            else:
-                probe_cap.release()
+                logger.info(f"Input: {source_label}")
+                logger.info(f"Resolution: {w}x{h}, Native FPS: {native_fps:.1f}, "
+                            f"Frames: {total if total > 0 else 'N/A'}")
+            # Ensure the cap is released regardless of verbose mode
+            probe_cap.release()
         else:
-            logger.info("Processing... Only FPS will be displayed.")
+            if self._verbose:
+                logger.info(f"Input: {source_label}")
+                logger.info("Processing... Only FPS will be displayed.")
+
+        # Overwrite target_fps with native_fps if Auto mode (-1) was passed from GUI
+        if self._target_fps == -1:
+            self._target_fps = native_fps
+            if self._verbose:
+                logger.info(f"Auto FPS Enabled: Synchronizing pipeline to {native_fps:.1f} FPS.")
 
         need_run_dir = self._save or self._dump_tensors
         results = []
