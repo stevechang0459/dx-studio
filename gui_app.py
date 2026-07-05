@@ -710,7 +710,9 @@ class InferenceGUI(QWidget):
         Slot called when the native QThread finishes.
         Guaranteed to execute even if the target script crashes unexpectedly.
         """
-        self.inference_thread = None
+        if getattr(self, 'inference_thread', None) is not None:
+            self.inference_thread.deleteLater()
+            self.inference_thread = None
 
         # 1. Drain the queues one last time to catch any remaining logs or frames
         #    before the UI resets, ensuring no resources are left behind.
@@ -719,6 +721,7 @@ class InferenceGUI(QWidget):
         # 2. Safely shut down the background video recording thread
         if getattr(self, 'video_recorder', None) is not None:
             self.video_recorder.stop()
+            self.video_recorder = None
 
         # 3. Handle Auto-Loop transition safely
         if not self._manual_stop:
@@ -935,51 +938,51 @@ class InferenceGUI(QWidget):
         # =========================================================
         # 1. Draw Model Info & Video Source (Top-Left)
         # =========================================================
-        try:
-            model_name = self.model_input.itemText(self.model_input.currentIndex())
-            model_name = os.path.basename(model_name)
-            video_name = self.video_input.itemText(self.video_input.currentIndex())
-            video_name = os.path.basename(video_name)
+        # try:
+        #     model_name = self.model_input.itemText(self.model_input.currentIndex())
+        #     model_name = os.path.basename(model_name)
+        #     video_name = self.video_input.itemText(self.video_input.currentIndex())
+        #     video_name = os.path.basename(video_name)
 
-            info_texts = [f"Source: {video_name}", f"Model: {model_name}"]
+        #     info_texts = [f"Source: {video_name}", f"Model: {model_name}"]
 
-            # Dynamic text scaling for top-left OSD
-            info_font_scale = 1.0 * ratio
-            info_thick = max(1, int(2 * ratio))
+        #     # Dynamic text scaling for top-left OSD
+        #     info_font_scale = 1.0 * ratio
+        #     info_thick = max(1, int(2 * ratio))
 
-            # Find the maximum width among the info text lines for bounding box calculation
-            max_text_w = 0
-            for text in info_texts:
-                (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, info_font_scale, info_thick)
-                if w > max_text_w:
-                    max_text_w = w
+        #     # Find the maximum width among the info text lines for bounding box calculation
+        #     max_text_w = 0
+        #     for text in info_texts:
+        #         (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, info_font_scale, info_thick)
+        #         if w > max_text_w:
+        #             max_text_w = w
 
-            # Position at top-left with safe padding boundaries
-            margin = max(10, int(20 * ratio))
-            padding = max(5, int(10 * ratio))
-            line_spacing = max(20, int(35 * ratio))
+        #     # Position at top-left with safe padding boundaries
+        #     margin = max(10, int(20 * ratio))
+        #     padding = max(5, int(10 * ratio))
+        #     line_spacing = max(20, int(35 * ratio))
 
-            box_x1 = margin
-            box_y1 = margin
-            box_x2 = box_x1 + max_text_w + padding * 2
-            box_h = padding * 2 + (len(info_texts) - 1) * line_spacing + h
-            box_y2 = box_y1 + box_h
+        #     box_x1 = margin
+        #     box_y1 = margin
+        #     box_x2 = box_x1 + max_text_w + padding * 2
+        #     box_h = padding * 2 + (len(info_texts) - 1) * line_spacing + h
+        #     box_y2 = box_y1 + box_h
 
-            # Draw semi-transparent background overlay
-            overlay = frame.copy()
-            cv2.rectangle(overlay, (box_x1, box_y1), (box_x2, box_y2), (0, 0, 0), -1)
-            cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+        #     # Draw semi-transparent background overlay
+        #     overlay = frame.copy()
+        #     cv2.rectangle(overlay, (box_x1, box_y1), (box_x2, box_y2), (0, 0, 0), -1)
+        #     cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
 
-            # Draw standard white text line by line
-            text_x = box_x1 + padding
-            text_y = box_y1 + padding + h
-            for text in info_texts:
-                cv2.putText(frame, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX,
-                            info_font_scale, (255, 255, 255), info_thick, cv2.LINE_AA)
-                text_y += line_spacing
+        #     # Draw standard white text line by line
+        #     text_x = box_x1 + padding
+        #     text_y = box_y1 + padding + h
+        #     for text in info_texts:
+        #         cv2.putText(frame, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX,
+        #                     info_font_scale, (255, 255, 255), info_thick, cv2.LINE_AA)
+        #         text_y += line_spacing
 
-        except Exception:
-            pass
+        # except Exception:
+        #     pass
 
         # =========================================================
         # 2. Draw DXTOP Monitor (Top-Right)
