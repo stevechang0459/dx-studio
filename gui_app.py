@@ -490,7 +490,8 @@ class InferenceGUI(QWidget):
         self.script_input = QComboBox()
         self.script_input.setEditable(True)
         # default_script = os.path.normpath(os.path.join(base_dir, "object_detection/yolov5s/yolov5s_async.py"))
-        default_script = os.path.normpath(os.path.join(base_dir, "object_detection/yolo26x/yolo26x_async.py"))
+        # default_script = os.path.normpath(os.path.join(base_dir, "object_detection/yolo26x/yolo26x_async.py"))
+        default_script = os.path.normpath(os.path.join(base_dir, "classification/yolo26x_cls/yolo26x_cls_async.py"))
         self.script_input.addItem(default_script)
 
         self.script_btn = QPushButton("Browse")
@@ -507,7 +508,8 @@ class InferenceGUI(QWidget):
         # Default to YOLOv5S if available
         for i in range(self.model_input.count()):
             # if "YoloV5S.dxnn" in self.model_input.itemText(i):
-            if "yolo26x.dxnn" in self.model_input.itemText(i):
+            # if "yolo26x.dxnn" in self.model_input.itemText(i):
+            if "yolo26x-cls.dxnn" in self.model_input.itemText(i):
                 self.model_input.setCurrentIndex(i)
                 break
 
@@ -721,6 +723,21 @@ class InferenceGUI(QWidget):
         # 2. Safely shut down the background video recording thread
         if getattr(self, 'video_recorder', None) is not None:
             self.video_recorder.stop()
+
+            # Wait for a maximum of 3000 milliseconds (3 seconds)
+            # If it returns False, the thread is still stuck running
+            if not self.video_recorder.wait(3000):
+                msg = "[WARNING] Video recording thread timed out during shutdown. Forcing termination...\n"
+                self.write_to_log_file(msg)
+                self.console_output.insertPlainText(msg)
+                self.console_output.ensureCursorVisible()
+
+                # As a last resort, violently kill the thread to avoid GUI freeze and crash
+                self.video_recorder.terminate()
+
+                # Wait a brief moment for the OS to finalize the thread termination
+                self.video_recorder.wait()
+
             self.video_recorder = None
 
         # 3. Handle Auto-Loop transition safely
