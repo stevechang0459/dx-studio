@@ -273,6 +273,8 @@ class InferenceGUI(QWidget):
         self._is_programmatic_resize = False
         self.video_index = -1
 
+        self.retiring_recorders = []
+
         self.init_ui()
 
     def hide_resolution_osd(self):
@@ -722,23 +724,37 @@ class InferenceGUI(QWidget):
 
         # 2. Safely shut down the background video recording thread
         if getattr(self, 'video_recorder', None) is not None:
-            self.video_recorder.stop()
+            # Transfer ownership to a local variable
+            recorder = self.video_recorder
 
-            # Wait for a maximum of 3000 milliseconds (3 seconds)
-            # If it returns False, the thread is still stuck running
-            if not self.video_recorder.wait(3000):
-                msg = "[WARNING] Video recording thread timed out during shutdown. Forcing termination...\n"
-                self.write_to_log_file(msg)
-                self.console_output.insertPlainText(msg)
-                self.console_output.ensureCursorVisible()
-
-                # As a last resort, violently kill the thread to avoid GUI freeze and crash
-                self.video_recorder.terminate()
-
-                # Wait a brief moment for the OS to finalize the thread termination
-                self.video_recorder.wait()
-
+            # Immediately free up the main reference for the next auto-loop cycle
             self.video_recorder = None
+
+            # Protect the thread from Python's Garbage Collection by keeping a reference
+            self.retiring_recorders.append(recorder)
+
+            # Disconnect custom signals to prevent delayed popups/actions in the UI
+            # while the next video is already playing
+            try:
+                recorder.recording_finished.disconnect()
+            except TypeError:
+                pass
+
+            # Define an asynchronous callback for when the thread actually exits
+            def cleanup_thread():
+                # Remove the strong reference so Python GC can collect it
+                if recorder in self.retiring_recorders:
+                    self.retiring_recorders.remove(recorder)
+
+                # Safely instruct Qt to delete the underlying C++ object
+                recorder.deleteLater()
+                print("[SYSTEM] Background recording thread fully cleaned up.")
+
+            # Connect QThread's native 'finished' signal to our cleanup callback
+            recorder.finished.connect(cleanup_thread)
+
+            # Finally, signal the thread's run() loop to exit gracefully
+            recorder.stop()
 
         # 3. Handle Auto-Loop transition safely
         if not self._manual_stop:
